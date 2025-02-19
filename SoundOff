@@ -1,0 +1,145 @@
+import os
+import discord
+import spotipy
+from spotipy.oauth2 import SpotifyOAuth
+from discord.ext import commands
+from dotenv import load_dotenv
+import webbrowser
+import re
+
+# Load environment variables
+load_dotenv()
+
+# Discord Bot Setup
+discord_token = os.getenv("DISCORD_TOKEN")
+discord_channel_id = int(os.getenv("DISCORD_CHANNEL_ID"))
+
+# Spotify API Setup
+sp_oauth = SpotifyOAuth(
+    client_id=os.getenv("SPOTIPY_CLIENT_ID"),
+    client_secret=os.getenv("SPOTIPY_CLIENT_SECRET"),
+    redirect_uri=os.getenv("SPOTIPY_REDIRECT_URI"),
+    scope=os.getenv("SPOTIPY_SCOPE")
+)
+
+token_info = None  # Store token globally
+sp = None  # Store Spotify client globally
+
+def refresh_spotify_token():
+    global token_info, sp
+    if token_info and not sp_oauth.is_token_expired(token_info):
+        return token_info['access_token']
+    elif token_info:
+        print("Refreshing Spotify access token...")
+        token_info = sp_oauth.refresh_access_token(token_info['refresh_token'])
+        sp = spotipy.Spotify(auth=token_info['access_token'])
+        return token_info['access_token']
+    return None
+
+# Discord Bot
+intents = discord.Intents.default()
+intents.messages = True
+intents.message_content = True  # Ensure the bot can read message commands
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+@bot.event
+async def on_ready():
+    print(f'Logged in as {bot.user}')
+    channel = bot.get_channel(discord_channel_id)
+    if channel:
+        await channel.send("Bot is online. Use `!login` to authenticate Spotify.")
+
+@bot.command()
+async def login(ctx):
+    global token_info
+    print("Received !login command")  # Debugging log
+    try:
+        auth_url = sp_oauth.get_authorize_url()
+        await ctx.send(f"Please authenticate by clicking this link: {auth_url}")
+        await ctx.send("Once authenticated, use `!callback <code>` to complete login.")
+    except discord.Forbidden:
+        print("Error: Bot does not have permission to send messages in this channel.")
+    except Exception as e:
+        print(f"Unexpected error handling !login: {e}")
+
+@bot.command()
+async def callback(ctx, code: str):
+    global token_info, sp
+    try:
+        token_info = sp_oauth.get_access_token(code, as_dict=True)
+        sp = spotipy.Spotify(auth=token_info['access_token'])
+        await ctx.send("Successfully logged into Spotify.")
+    except Exception as e:
+        await ctx.send(f"Failed to authenticate: {e}")
+
+@bot.command()
+async def list(ctx):
+    global token_info
+    if token_info:
+        await ctx.send("You are logged into Spotify.")
+    else:
+        await ctx.send("You are not logged in. Use `!login` to authenticate.")
+
+@bot.command()
+async def now_playing(ctx):
+    global sp
+    if not sp:
+        await ctx.send("You are not logged in. Use `!login` first.")
+        return
+    refresh_spotify_token()
+    current_track = sp.current_playback()
+    if current_track and current_track['is_playing']:
+        song = current_track['item']['name']
+        artist = current_track['item']['artists'][0]['name']
+        await ctx.send(f"Now Playing: **{song}** by **{artist}**")
+    else:
+        await ctx.send("No song is currently playing.")
+
+@bot.command()
+async def top_track(ctx):
+    global sp
+    if not sp:
+        await ctx.send("You are not logged in. Use `!login` first.")
+        return
+    refresh_spotify_token()
+    results = sp.current_user_top_tracks(limit=1, time_range="long_term")
+    if results['items']:
+        song = results['items'][0]['name']
+        artist = results['items'][0]['artists'][0]['name']
+        await ctx.send(f"Your Top Track of All Time: **{song}** by **{artist}**")
+    else:
+        await ctx.send("No top track data found.")
+
+@bot.command()
+async def top_artist(ctx):
+    global sp
+    if not sp:
+        await ctx.send("You are not logged in. Use `!login` first.")
+        return
+    refresh_spotify_token()
+    results = sp.current_user_top_artists(limit=1, time_range="long_term")
+    if results['items']:
+        artist = results['items'][0]['name']
+        await ctx.send(f"Your Top Artist of All Time: **{artist}**")
+    else:
+        await ctx.send("No top artist data found.")
+
+@bot.command()
+async def top_10(ctx):
+    global sp
+    if not sp:
+        await ctx.send("You are not logged in. Use `!login` first.")
+        return
+    refresh_spotify_token()
+    results = sp.current_user_top_tracks(limit=10, time_range="long_term")
+    if results['items']:
+        top_songs = [f"{idx+1}. **{song['name']}** by **{song['artists'][0]['name']}**" for idx, song in enumerate(results['items'])]
+        await ctx.send("Your Top 10 Tracks of All Time:\n" + "\n".join(top_songs))
+    else:
+        await ctx.send("No top tracks data found.")
+
+# Run the bot
+if discord_token:
+    bot.run(discord_token)
+else:
+    print("Error: DISCORD_TOKEN is missing. Please check your .env file.")
